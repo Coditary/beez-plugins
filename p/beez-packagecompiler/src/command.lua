@@ -1,0 +1,255 @@
+local M = {}
+
+local function project_cd(cfg, root)
+    local dir = root
+    if cfg.project_root ~= "." and cfg.project_root ~= "" then
+        dir = root .. "/" .. cfg.project_root
+    end
+
+    return "cd " .. beez.char.quote(dir)
+end
+
+local function julia_threads_prefix(cfg)
+    if cfg.parallelism == nil or cfg.parallelism == "" or cfg.parallelism == "0" then
+        return ""
+    end
+
+    return "export JULIA_CPU_THREADS=" .. beez.char.quote(cfg.parallelism) .. " && "
+end
+
+local function precompile_lines(cfg)
+    if cfg.precompile_execution_file == nil then
+        return ""
+    end
+
+    local files = cfg.precompile_execution_file
+    if type(files) ~= "table" then
+        files = { files }
+    end
+
+    if #files == 0 then
+        return ""
+    end
+
+    local quoted = {}
+    for _, file in ipairs(files) do
+        quoted[#quoted + 1] = beez.char.quote(file)
+    end
+
+    return "precompile_execution_file=[" .. table.concat(quoted, ", ") .. "],"
+end
+
+function M.setup(cfg, root)
+    local stamp = root .. "/" .. cfg.build_dir .. "/.packagecompiler-setup"
+
+    return table.concat({
+        julia_threads_prefix(cfg),
+        project_cd(cfg, root),
+        "&&",
+        "mkdir -p " .. beez.char.quote(root .. "/" .. cfg.build_dir),
+        "&&",
+        cfg.julia_binary,
+        "--project=.",
+        "-e",
+        beez.char.quote("using Pkg; Pkg.instantiate(); using PackageCompiler"),
+        "&&",
+        "touch " .. beez.char.quote(stamp),
+    }, " ")
+end
+
+function M.create_app_script(cfg, root)
+    local app_dir = root .. "/" .. cfg.app_dir
+    local lines = {
+        "using PackageCompiler",
+        "create_app(",
+        "    " .. beez.char.quote(cfg.entry_script_rel) .. ",",
+        "    " .. beez.char.quote(app_dir) .. ";",
+        "    force=" .. (cfg.force and "true" or "false") .. ",",
+    }
+
+    local precompile = precompile_lines(cfg)
+    if precompile ~= "" then
+        lines[#lines + 1] = "    " .. precompile
+    end
+
+    lines[#lines + 1] = ")"
+    return table.concat(lines, "\n")
+end
+
+function M.create_sysimage_script(cfg, root)
+    local sysimage_dir = root .. "/" .. cfg.bin_dir
+    local lines = {
+        "using PackageCompiler",
+        "ext = Sys.isapple() ? \"dylib\" : (Sys.iswindows() ? \"dll\" : \"so\")",
+        "sysimage_path = joinpath("
+            .. beez.char.quote(sysimage_dir)
+            .. ", "
+            .. beez.char.quote(cfg.sysimage_basename)
+            .. " * \".\" * ext)",
+        "create_sysimage(",
+        "    " .. beez.char.quote(cfg.module_name) .. ";",
+        "    sysimage_path=sysimage_path,",
+        "    project=" .. beez.char.quote(".") .. ",",
+        "    force=" .. (cfg.force and "true" or "false") .. ",",
+    }
+
+    local precompile = precompile_lines(cfg)
+    if precompile ~= "" then
+        lines[#lines + 1] = "    " .. precompile
+    end
+
+    lines[#lines + 1] = ")"
+    return table.concat(lines, "\n")
+end
+
+function M.compile_with_heredoc(cfg, root, script_body)
+    local header = table.concat({
+        julia_threads_prefix(cfg),
+        project_cd(cfg, root),
+        "&&",
+        "mkdir -p " .. beez.char.quote(root .. "/" .. cfg.bin_dir),
+        "&&",
+        cfg.julia_binary,
+    }, " ")
+
+    if cfg.julia_flags ~= nil and cfg.julia_flags ~= "" then
+        header = header .. " " .. cfg.julia_flags
+    end
+
+    header = header .. " --project=."
+
+    return header .. "\n<<'JULIA_EOF'\n" .. script_body .. "\nJULIA_EOF"
+end
+
+function M.compile_create_app(cfg, root)
+    
+function M.run(cfg, root)
+    local run_args = beez.env_or("BEEZ_RUN_ARGS", cfg.run_args or "")
+
+    if cfg.run_command ~= nil and cfg.run_command ~= "" then
+        if run_args ~= "" then
+            return cfg.run_command .. " " .. run_args
+        end
+        return cfg.run_command
+    end
+
+    if cfg.primary_source ~= nil then
+        local interpreter = cfg.interpreter_binary
+        if interpreter == nil or interpreter == "" then
+            error("run: primary_source set but no interpreter_binary in config")
+        end
+        local parts = {}
+        if cfg.project_root ~= nil and cfg.project_root ~= "." and cfg.project_root ~= "" then
+            parts[#parts + 1] = "cd " .. beez.char.quote(root .. "/" .. cfg.project_root)
+            parts[#parts + 1] = "&&"
+        end
+        parts[#parts + 1] = interpreter
+        parts[#parts + 1] = cfg.primary_source
+        if run_args ~= "" then
+            parts[#parts + 1] = run_args
+        end
+        return table.concat(parts, " ")
+    end
+
+    if cfg.primary_output ~= nil then
+        local exe = root .. "/" .. cfg.primary_output
+        local parts = {
+            "(",
+            "test -x " .. beez.char.quote(exe),
+            "||",
+            "test -f " .. beez.char.quote(exe),
+            ")",
+            "&&",
+            beez.char.quote(exe),
+        }
+        if run_args ~= "" then
+            parts[#parts + 1] = run_args
+        end
+        return table.concat(parts, " ")
+    end
+
+    if cfg.build_tree ~= nil then
+        local bin_dir = root .. "/" .. cfg.build_tree .. "/bin"
+        local shell = "set -e; bin=$(find "
+            .. beez.char.quote(bin_dir)
+            .. " -type f \\( -perm -111 -o -name '*.wasm' -o -name '*.js' \\) 2>/dev/null | head -n1); "
+            .. "if [ -z \"$bin\" ]; then echo 'run: no executable in "
+            .. cfg.build_tree
+            .. "/bin' >&2; exit 1; fi; exec \"$bin\""
+        if run_args ~= "" then
+            shell = shell .. " " .. run_args
+        end
+        return "sh -c " .. beez.char.quote(shell)
+    end
+
+    error("run: no run target configured")
+end
+
+return M.compile_with_heredoc(cfg, root, M.create_app_script(cfg, root))
+end
+
+function M.compile_create_sysimage(cfg, root)
+    return M.compile_with_heredoc(cfg, root, M.create_sysimage_script(cfg, root))
+end
+
+function M.compile(cfg, root)
+    if cfg.compile_mode == "create_sysimage" then
+        return M.compile_create_sysimage(cfg, root)
+    end
+
+    return M.compile_create_app(cfg, root)
+end
+
+function M.verify_create_app(cfg, root)
+    local output = root .. "/" .. cfg.primary_output
+    return table.concat({
+        "test -f " .. beez.char.quote(output),
+        "&&",
+        "test -x " .. beez.char.quote(output),
+    }, " ")
+end
+
+function M.verify_create_sysimage(cfg, root)
+    local bin_dir = beez.char.quote(root .. "/" .. cfg.bin_dir)
+    return table.concat({
+        "test -d " .. bin_dir,
+        "&&",
+        "find " .. bin_dir,
+        "-maxdepth 1 -name '" .. cfg.sysimage_basename .. ".*' -type f | grep -q .",
+    }, " ")
+end
+
+function M.verify(cfg, root)
+    if cfg.compile_mode == "create_sysimage" then
+        return M.verify_create_sysimage(cfg, root)
+    end
+
+    return M.verify_create_app(cfg, root)
+end
+
+function M.test(cfg, root)
+    local stamp = root .. "/" .. cfg.reports_dir .. "/test/packagecompiler-" .. cfg.profile_name .. ".ok"
+    local parts = {
+        julia_threads_prefix(cfg),
+        project_cd(cfg, root),
+        "&&",
+        "mkdir -p " .. beez.char.quote(root .. "/" .. cfg.reports_dir .. "/test"),
+        "&&",
+        cfg.julia_binary,
+        "--project=.",
+        "-e",
+        beez.char.quote("using Pkg; Pkg.test()"),
+    }
+
+    if cfg.test_args ~= nil and cfg.test_args ~= "" then
+        parts[#parts + 1] = "&&"
+        parts[#parts + 1] = cfg.test_args
+    end
+
+    parts[#parts + 1] = "&&"
+    parts[#parts + 1] = "touch " .. beez.char.quote(stamp)
+
+    return table.concat(parts, " ")
+end
+
+return M

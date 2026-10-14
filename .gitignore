@@ -1,0 +1,10 @@
+.DS_Store
+dist/
+releases/
+*.rqp
+bin/
+build/
+target/
+**/bin/
+**/build/
+**/target/

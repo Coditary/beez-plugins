@@ -1,0 +1,12 @@
+.DS_Store
+dist/
+releases/
+*.rqp
+# Build / toolchain outputs
+bin/
+build/
+target/
+dist/
+**/bin/
+**/build/
+**/target/

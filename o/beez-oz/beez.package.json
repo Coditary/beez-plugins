@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "organization": "coditary",
+  "name": "oz",
+  "version": "1.0.0",
+  "entry": "beez_plugin.lua"
+}

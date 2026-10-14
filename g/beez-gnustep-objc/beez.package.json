@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "organization": "coditary",
+  "name": "gnustep-objc",
+  "version": "1.0.0",
+  "entry": "beez_plugin.lua"
+}

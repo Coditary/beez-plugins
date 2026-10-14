@@ -1,0 +1,38 @@
+local command = require("src.command")
+
+local M = {}
+
+local function load_index(config, root, ctx, log_prefix)
+    local index_path = config.index_lua_abs
+    local compdb_path = config.build_tree_abs .. "/compile_commands.json"
+    local prefix = log_prefix or config.log_prefix_compile
+
+    if not beez.fs.exists(compdb_path) then
+        print(prefix .. " compile_commands.json not found: " .. compdb_path)
+        print(prefix .. " Run configure first (e.g. beez -s configure:setup).")
+        return nil, 2
+    end
+
+    local code = beez.shell.run(ctx, prefix, command.index(config, root))
+    if code ~= 0 then
+        return nil, code
+    end
+
+    local chunk, load_error = loadfile(index_path)
+    if chunk == nil then
+        print(prefix .. " failed to load index: " .. tostring(load_error))
+        return nil, 1
+    end
+
+    local index = chunk()
+    if index == nil or index.entries == nil then
+        print(prefix .. " invalid gcc-objc index at " .. index_path)
+        return nil, 1
+    end
+
+    return index, 0
+end
+
+return {
+    load_index = load_index,
+}
